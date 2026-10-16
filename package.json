@@ -1,0 +1,14 @@
+{
+  "name": "replay-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Auto game recorder + highlight library on top of OBS Studio (no ads, no injection).",
+  "scripts": {
+    "start": "node service/index.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "obs-websocket-js": "^5.0.6"
+  }
+}

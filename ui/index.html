@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay Capture</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#262b36; --text:#e6e8ee; --muted:#8b93a7; --accent:#7d59be; --kill:#4ade80; --death:#f87171; --assist:#60a5fa; --won:#4ade80; --lost:#f87171; --fight:#fbbf24; --obj:#a78bfa; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, Segoe UI, sans-serif; display:grid; grid-template-columns: 340px 1fr; height:100vh }
+  aside { border-right:1px solid var(--line); overflow:auto; display:flex; flex-direction:column }
+  header { padding:12px 14px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; background:var(--panel) }
+  header b { font-size:15px }
+  #status { font-size:12px; color:var(--muted) } #status.rec { color:var(--kill) }
+  .item { display:grid; grid-template-columns: 96px 1fr; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); cursor:pointer }
+  .item:hover, .item.active { background:var(--panel) }
+  .item img { width:96px; height:54px; object-fit:cover; border-radius:4px; background:#000 }
+  .item .t { font-weight:600 } .item .s { color:var(--muted); font-size:12px }
+  .item.deleted { opacity:.5 }
+  main { display:flex; flex-direction:column; min-width:0; padding:14px; gap:10px; overflow:auto }
+  video { width:100%; max-height:62vh; background:#000; border-radius:6px }
+  #timeline { position:relative; height:26px; background:var(--panel); border:1px solid var(--line); border-radius:4px; cursor:pointer }
+  #timeline .mark { position:absolute; top:3px; width:3px; height:20px; border-radius:2px }
+  #timeline .range { position:absolute; top:0; height:100%; background:rgba(125,89,190,.35) }
+  #timeline .head { position:absolute; top:0; width:2px; height:100%; background:#fff }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+  button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer }
+  button:hover { border-color:var(--accent) } button.primary { background:var(--accent); border-color:var(--accent) } button.danger:hover { border-color:var(--death); color:var(--death) }
+  input[type=text] { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 8px }
+  .events { display:flex; flex-wrap:wrap; gap:6px } .ev { padding:3px 8px; border-radius:12px; font-size:12px; border:1px solid var(--line); cursor:pointer; background:var(--panel) }
+  .clips { display:grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr)); gap:10px }
+  .clip { background:var(--panel); border:1px solid var(--line); border-radius:6px; overflow:hidden } .clip img { width:100%; aspect-ratio:16/9; object-fit:cover; display:block; background:#000 } .clip div { padding:8px; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:6px }
+  .muted { color:var(--muted) } .empty { color:var(--muted); padding:40px; text-align:center }
+  @media (max-width: 900px) { body { grid-template-columns: 1fr; grid-template-rows: 40vh 1fr } aside { border-right:0; border-bottom:1px solid var(--line) } }
+</style>
+</head>
+<body>
+<aside>
+  <header><b>Replay Capture</b><span id="status">…</span></header>
+  <div id="list"></div>
+</aside>
+<main>
+  <div id="empty" class="empty">Pick a recording on the left. Recordings start by themselves when TFT or League launches.</div>
+  <div id="player" hidden>
+    <div class="row" style="justify-content:space-between"><div><b id="title"></b> <span id="sub" class="muted"></span></div>
+      <div class="row"><button id="fav">☆ Favourite</button><button id="open">Open folder</button><button id="del" class="danger">Delete</button></div></div>
+    <video id="video" controls preload="metadata"></video>
+    <div id="timeline"></div>
+    <div id="events" class="events"></div>
+    <div class="row">
+      <button id="setIn">[ In</button><button id="setOut">Out ]</button><span id="range" class="muted">no range</span>
+      <input id="clipName" type="text" placeholder="clip name (optional)" style="flex:1; min-width:160px">
+      <label class="muted"><input id="precise" type="checkbox"> frame-precise (re-encode)</label>
+      <button id="cut" class="primary">Make clip</button><span id="cutMsg" class="muted"></span>
+    </div>
+    <div><b>Clips</b></div><div id="clips" class="clips"></div>
+  </div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const colors = { kill:'var(--kill)', death:'var(--death)', assist:'var(--assist)', multikill:'var(--kill)', objective:'var(--obj)', combat_start:'var(--fight)', victory:'var(--won)', round_won:'var(--won)', round_lost:'var(--lost)', game_end:'#fff', game_start:'#fff' };
+let items = [], cur = null, inT = null, outT = null;
+const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60; return (h?h+':':'') + String(m).padStart(h?2:1,'0') + ':' + String(x).padStart(2,'0'); };
+const gb = (b) => (b/1e9).toFixed(2) + ' GB';
+
+async function api(p, opt) { const r = await fetch(p, opt); if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText); return r.json(); }
+async function refreshStatus() { try { const s = await api('/api/status'); const el = $('#status'); el.textContent = s.recording ? `● REC ${s.game} · ${s.events} markers` : (s.obs ? 'idle · OBS ready' : 'OBS not connected'); el.className = s.recording ? 'rec' : ''; } catch { $('#status').textContent = 'service offline'; } }
+async function loadList() { items = await api('/api/recordings'); renderList(); }
+function renderList() {
+  const el = $('#list'); el.innerHTML = '';
+  if (!items.length) { el.innerHTML = '<div class="empty">No recordings yet.</div>'; return; }
+  for (const m of items) {
+    const d = document.createElement('div'); d.className = 'item' + (cur?.id===m.id?' active':'') + (m.deleted?' deleted':'');
+    const counts = m.events.filter(e=>['kill','round_won'].includes(e.type)).length;
+    d.innerHTML = `<img src="/media/${encodeURIComponent(m.id)}.jpg" loading="lazy" onerror="this.style.visibility='hidden'"><div><div class="t">${m.favorite?'★ ':''}${m.game}</div><div class="s">${new Date(m.startedAt).toLocaleString()} · ${fmt(m.durationSec)}${m.deleted?' · video deleted (quota)':' · '+gb(m.sizeBytes)}</div><div class="s">${counts} highlights · ${m.clips.length} clips</div></div>`;
+    d.onclick = () => select(m.id); el.appendChild(d);
+  }
+}
+async function select(id) {
+  cur = await api('/api/recordings/' + encodeURIComponent(id)); inT = outT = null; renderList();
+  $('#empty').hidden = true; $('#player').hidden = false;
+  $('#title').textContent = cur.game; $('#sub').textContent = `${new Date(cur.startedAt).toLocaleString()} · ${fmt(cur.durationSec)}`;
+  $('#fav').textContent = (cur.favorite ? '★' : '☆') + ' Favourite';
+  const v = $('#video'); v.src = cur.deleted ? '' : '/media/' + encodeURIComponent(cur.file);
+  renderEvents(); renderClips(); updateRange();
+}
+function renderEvents() {
+  const tl = $('#timeline'); tl.innerHTML = ''; const ev = $('#events'); ev.innerHTML = '';
+  const D = cur.durationSec || 1;
+  for (const e of cur.events) {
+    const m = document.createElement('div'); m.className = 'mark'; m.style.left = (e.t/D*100) + '%'; m.style.background = colors[e.type] || 'var(--muted)'; m.title = `${fmt(e.t)} ${e.label||e.type}`; m.onclick = (x) => { x.stopPropagation(); seek(e.t - 5); }; tl.appendChild(m);
+    const chip = document.createElement('span'); chip.className = 'ev'; chip.style.borderColor = colors[e.type] || 'var(--line)'; chip.textContent = `${fmt(e.t)} ${e.label||e.type}`; chip.onclick = () => seek(e.t - 5); ev.appendChild(chip);
+  }
+  const head = document.createElement('div'); head.className = 'head'; head.id = 'head'; tl.appendChild(head);
+  const rg = document.createElement('div'); rg.className = 'range'; rg.id = 'rg'; tl.appendChild(rg);
+}
+function seek(t) { const v = $('#video'); v.currentTime = Math.max(0, t); v.play(); }
+$('#timeline').onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); seek((e.clientX - r.left)/r.width * (cur.durationSec||0)); };
+$('#video').ontimeupdate = () => { const D = cur?.durationSec || 1; const h = $('#head'); if (h) h.style.left = ($('#video').currentTime/D*100) + '%'; };
+function updateRange() { const rg = $('#rg'); const D = cur?.durationSec || 1; if (inT!=null && outT!=null && outT>inT) { rg.style.left = (inT/D*100)+'%'; rg.style.width = ((outT-inT)/D*100)+'%'; $('#range').textContent = `${fmt(inT)} → ${fmt(outT)} (${fmt(outT-inT)})`; } else { if (rg) rg.style.width = '0'; $('#range').textContent = inT!=null ? `in ${fmt(inT)}` : (outT!=null ? `out ${fmt(outT)}` : 'no range'); } }
+$('#setIn').onclick = () => { inT = $('#video').currentTime; updateRange(); };
+$('#setOut').onclick = () => { outT = $('#video').currentTime; updateRange(); };
+$('#cut').onclick = async () => { if (inT==null || outT==null || outT<=inT) return $('#cutMsg').textContent = 'set In and Out first'; $('#cutMsg').textContent = 'cutting…'; try { await api('/api/recordings/' + encodeURIComponent(cur.id) + '/clip', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ start: inT, end: outT, precise: $('#precise').checked, name: $('#clipName').value }) }); $('#cutMsg').textContent = 'done'; await select(cur.id); await loadList(); } catch (e) { $('#cutMsg').textContent = 'failed: ' + e.message; } };
+$('#fav').onclick = async () => { await api('/api/recordings/' + encodeURIComponent(cur.id) + '/favorite', { method:'POST' }); await loadList(); await select(cur.id); };
+$('#del').onclick = async () => { if (!confirm(`Delete "${cur.id}" and its clips?`)) return; await api('/api/recordings/' + encodeURIComponent(cur.id), { method:'DELETE' }); cur = null; $('#player').hidden = true; $('#empty').hidden = false; await loadList(); };
+$('#open').onclick = () => { navigator.clipboard?.writeText(cur.file); alert('File: ' + cur.file + '\n(in your Replay Capture library folder; name copied)'); };
+function renderClips() {
+  const el = $('#clips'); el.innerHTML = cur.clips.length ? '' : '<span class="muted">No clips yet. Set In/Out on the timeline and press Make clip.</span>';
+  for (const c of cur.clips) { const d = document.createElement('div'); d.className = 'clip'; const jpg = c.file.replace(/\.mp4$/, '.jpg');
+    d.innerHTML = `<a href="/media/clips/${encodeURIComponent(c.file)}" target="_blank"><img src="/media/clips/${encodeURIComponent(jpg)}" onerror="this.style.visibility='hidden'"></a><div><span>${fmt(c.start)}–${fmt(c.end)} · ${gb(c.sizeBytes)}</span><button class="danger" title="delete clip">✕</button></div>`;
+    d.querySelector('button').onclick = async () => { if (!confirm('Delete clip?')) return; await api(`/api/recordings/${encodeURIComponent(cur.id)}/clips/${encodeURIComponent(c.file)}`, { method:'DELETE' }); await select(cur.id); await loadList(); };
+    el.appendChild(d); }
+}
+document.addEventListener('keydown', (e) => { if (e.target.tagName==='INPUT') return; if (e.key==='i') $('#setIn').click(); if (e.key==='o') $('#setOut').click(); if (e.key===' ') { e.preventDefault(); const v=$('#video'); v.paused?v.play():v.pause(); } });
+loadList(); refreshStatus(); setInterval(refreshStatus, 3000); setInterval(loadList, 30000);
+</script>
+</body>
+</html>
