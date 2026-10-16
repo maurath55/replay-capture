@@ -12,7 +12,7 @@ library to trim clips. No ads, no game injection, no admin rights, no accounts, 
    ```
    `setup.mjs` installs OBS Studio and ffmpeg via winget if missing, detects your game monitor's
    resolution, writes `config.json`, and seeds OBS with a `ReplayCapture` profile and `Game` scene.
-3. Start it: `npm start` (or double-click `start.cmd`). Open http://localhost:5178.
+3. Start it: `npm start` (or run `powershell -ExecutionPolicy Bypass -File start-hidden.ps1` for no window). Open http://localhost:5178.
 4. Optional, start at logon: `powershell -ExecutionPolicy Bypass -File install-autostart.ps1`
 
 ## How it works

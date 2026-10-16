@@ -4,8 +4,8 @@ $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Replay Capture.lnk'
 if ($Remove) { Remove-Item $lnk -ErrorAction SilentlyContinue; "removed $lnk"; exit }
 $ws = New-Object -ComObject WScript.Shell
 $s = $ws.CreateShortcut($lnk)
-$s.TargetPath = 'wscript.exe'
-$s.Arguments = '"' + (Join-Path $PSScriptRoot 'start-hidden.vbs') + '"'
+$s.TargetPath = 'powershell.exe'
+$s.Arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'start-hidden.ps1') + '"'
 $s.WorkingDirectory = $PSScriptRoot
 $s.Description = 'Replay Capture: auto game recorder'
 $s.Save()
