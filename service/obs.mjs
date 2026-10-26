@@ -1,6 +1,6 @@
 // OBS controller: launches OBS minimized to tray, connects via obs-websocket, starts/stops recordings.
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import OBSWebSocket from 'obs-websocket-js';
 
@@ -26,6 +26,7 @@ export class Obs {
     const running = await isProcessRunning('obs64.exe');
     if (running) return false;
     if (!existsSync(this.cfg.obsExe)) throw new Error(`OBS not found at ${this.cfg.obsExe}`);
+    clearCrashSentinels(this.log);
     this.log.info('[obs] launching OBS minimized to tray');
     const child = spawn(this.cfg.obsExe, ['--minimize-to-tray', '--disable-updater', '--disable-shutdown-check', '--profile', 'ReplayCapture', '--collection', 'Game'], {
       cwd: path.dirname(this.cfg.obsExe), detached: true, stdio: 'ignore', windowsHide: true,
@@ -97,6 +98,19 @@ export class Obs {
   }
 
   async disconnect() { try { await this.ws.disconnect(); } catch {} }
+}
+
+/**
+ * OBS 32 leaves a run_* marker in %APPDATA%/obs-studio/.sentinel for every session that didn't exit
+ * cleanly (reboots, crashes, kills) and then blocks startup on a hidden "Crash Detected" dialog,
+ * ignoring --disable-shutdown-check. Only call while OBS is not running, so every marker is stale.
+ */
+function clearCrashSentinels(log) {
+  const dir = path.join(process.env.APPDATA ?? '', 'obs-studio', '.sentinel');
+  if (!process.env.APPDATA || !existsSync(dir)) return;
+  const stale = readdirSync(dir).filter((f) => f.startsWith('run_'));
+  for (const f of stale) { try { unlinkSync(path.join(dir, f)); } catch {} }
+  if (stale.length) log.info(`[obs] cleared ${stale.length} stale crash marker(s)`);
 }
 
 export async function isProcessRunning(exeName) {
