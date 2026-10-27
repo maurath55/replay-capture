@@ -30,12 +30,15 @@
   /* Player: custom controls over the video, markers on the seek bar, pinch/wheel zoom + drag pan. */
   .viewport { position:relative; overflow:hidden; border-radius:13px; background:#000; box-shadow:0 12px 32px rgba(0,0,0,.35); touch-action:none; user-select:none; -webkit-user-select:none }
   video { display:block; width:100%; max-height:62vh; background:#000; transform-origin:0 0 }
-  .controls { position:absolute; inset:auto 0 0 0; display:grid; grid-template-columns:auto auto minmax(80px,1fr) auto auto auto; align-items:center; gap:8px; padding:26px 10px 8px; background:linear-gradient(transparent, rgba(8,11,18,.94) 50%); transition:opacity .25s }
+  .controls { position:absolute; inset:auto 0 0 0; display:flex; align-items:center; gap:8px; padding:26px 10px 8px; background:linear-gradient(transparent, rgba(8,11,18,.94) 50%); transition:opacity .25s }
   .viewport.idle .controls { opacity:0; pointer-events:none } .viewport.idle { cursor:none }
   .controls button { background:rgba(8,11,18,.82); border-color:rgba(220,230,248,.55); padding:6px 10px; min-width:38px }
   #time { color:#d6e0f2; font-size:12px; font-variant-numeric:tabular-nums; white-space:nowrap }
   #zoomReset[hidden] { display:none }
-  #track { position:relative; height:28px; cursor:pointer; touch-action:none }
+  #speedWrap { position:relative } #speed { min-width:46px; font-variant-numeric:tabular-nums }
+  #speeds { position:absolute; right:0; bottom:calc(100% + 6px); display:flex; gap:2px; padding:4px; background:rgba(8,11,18,.96); border:1px solid #2a3850; border-radius:10px; z-index:5 }
+  #speeds[hidden] { display:none } #speeds button { border:0; padding:6px 9px; min-width:0 } #speeds button.on { color:var(--gold2) }
+  #track { position:relative; flex:1; min-width:80px; height:28px; cursor:pointer; touch-action:none }
   #track .bar { position:absolute; left:0; right:0; top:12px; height:4px; border-radius:2px; background:rgba(220,230,248,.25) }
   #track .fill { position:absolute; left:0; top:12px; height:4px; border-radius:2px; background:var(--gold) }
   #track .mark { position:absolute; top:6px; width:3px; height:16px; margin-left:-1px; border-radius:2px; pointer-events:none }
@@ -98,7 +101,7 @@
       <div class="controls">
         <button id="play">▶</button><button id="mute">🔊</button>
         <div id="track"><div class="bar"></div><div class="fill" id="fill"></div><div id="marks"></div><div class="range" id="rg"></div><div class="thumb" id="thumb"></div></div>
-        <span id="time">0:00 / 0:00</span><button id="zoomReset" hidden>1×</button><button id="fs" title="Full screen">⛶</button>
+        <span id="time">0:00 / 0:00</span><button id="zoomReset" hidden title="Reset zoom">Zoom ✕</button><span id="speedWrap"><button id="speed" title="Playback speed">1×</button><div id="speeds" hidden></div></span><button id="fs" title="Full screen">⛶</button>
       </div>
     </div>
     <div id="events" class="events"></div>
@@ -151,7 +154,7 @@ async function select(id) {
   $('#empty').hidden = true; $('#player').hidden = false;
   $('#title').textContent = cur.game; $('#sub').textContent = `${new Date(cur.startedAt).toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })} · ${fmt(cur.durationSec)}`;
   $('#fav').innerHTML = (cur.favorite ? '★' : '☆') + '<span class="lbl"> Favourite</span>'; $('#fav').classList.toggle('on', !!cur.favorite);
-  v.src = cur.deleted ? '' : '/media/' + encodeURIComponent(cur.file); resetZoom();
+  v.src = cur.deleted ? '' : '/media/' + encodeURIComponent(cur.file); v.playbackRate = rate; resetZoom();
   shown = mergeRounds(cur.events); renderEvents(); renderClips(); updateRange(); sync();
 }
 function renderEvents() {
@@ -178,6 +181,14 @@ function sync() {
 }
 ['timeupdate','play','pause','loadedmetadata','volumechange','seeked'].forEach((ev) => v.addEventListener(ev, sync));
 v.addEventListener('loadedmetadata', () => { renderEvents(); updateRange(); });
+// Playback speed: remembered across recordings (and visits, when storage is available).
+const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3];
+let rate = 1; try { rate = RATES.includes(+localStorage.rcRate) ? +localStorage.rcRate : 1; } catch {}
+function setRate(r) { rate = r; v.playbackRate = r; try { localStorage.rcRate = r; } catch {} $('#speed').textContent = r + '×'; $('#speeds').hidden = true; renderRates(); }
+function renderRates() { $('#speeds').innerHTML = ''; for (const r of RATES) { const b = document.createElement('button'); b.textContent = r + '×'; b.className = r === rate ? 'on' : ''; b.onclick = () => setRate(r); $('#speeds').appendChild(b); } }
+$('#speed').onclick = () => { $('#speeds').hidden = !$('#speeds').hidden; };
+v.addEventListener('loadedmetadata', () => { v.playbackRate = rate; });
+setRate(rate);
 const togglePlay = () => { if (!v.src) return; v.paused ? v.play().catch(()=>{}) : v.pause(); };
 $('#play').onclick = togglePlay;
 $('#mute').onclick = () => { v.muted = !v.muted; };
@@ -254,7 +265,7 @@ function renderClips() {
     d.querySelector('button').onclick = async () => { if (!confirm('Delete clip?')) return; await api(`/api/recordings/${encodeURIComponent(cur.id)}/clips/${encodeURIComponent(c.file)}`, { method:'DELETE' }); await select(cur.id); await loadList(); };
     el.appendChild(d); }
 }
-document.addEventListener('keydown', (e) => { if (e.target.tagName==='INPUT' || !cur) return; if (e.key==='i') $('#setIn').click(); if (e.key==='o') $('#setOut').click(); if (e.key===' ') { e.preventDefault(); togglePlay(); } if (e.key==='ArrowLeft') seek(v.currentTime - 5); if (e.key==='ArrowRight') seek(v.currentTime + 5); });
+document.addEventListener('keydown', (e) => { if (e.target.tagName==='INPUT' || !cur) return; if (e.key==='i') $('#setIn').click(); if (e.key==='o') $('#setOut').click(); if (e.key===' ') { e.preventDefault(); togglePlay(); } if (e.key==='ArrowLeft') seek(v.currentTime - 5); if (e.key==='ArrowRight') seek(v.currentTime + 5); const i = RATES.indexOf(rate); if (e.key==='>' && i < RATES.length-1) setRate(RATES[i+1]); if (e.key==='<' && i > 0) setRate(RATES[i-1]); });
 loadList().then(() => { if (compact.matches && !cur) setDrawer(true); }); refreshStatus(); setInterval(refreshStatus, 3000); setInterval(loadList, 30000);
 </script>
 </body>
