@@ -3,7 +3,7 @@ import http from 'node:http';
 import { promises as fs, createReadStream, existsSync } from 'node:fs';
 import path from 'node:path';
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.mp4': 'video/mp4', '.jpg': 'image/jpeg', '.json': 'application/json' };
+const MIME = { '.ico': 'image/x-icon', '.png': 'image/png', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.mp4': 'video/mp4', '.jpg': 'image/jpeg', '.json': 'application/json' };
 
 export function startServer({ port, uiDir, library, status }) {
   const server = http.createServer(async (req, res) => {
@@ -11,16 +11,19 @@ export function startServer({ port, uiDir, library, status }) {
       const url = new URL(req.url, 'http://127.0.0.1');
       const p = url.pathname;
       if (p === '/' || p === '/index.html') return sendFile(req, res, path.join(uiDir, 'index.html'));
+      if (p === '/favicon.ico') return sendFile(req, res, path.join(uiDir, 'icon.ico'));
       if (p.startsWith('/ui/')) return sendFile(req, res, path.join(uiDir, p.slice(4)));
       if (p.startsWith('/media/')) return sendFile(req, res, path.join(library.dir, decodeURIComponent(p.slice(7))));
       if (p === '/api/status') return json(res, status());
       if (p === '/api/recordings' && req.method === 'GET') return json(res, await library.list());
-      const m = p.match(/^\/api\/recordings\/([^/]+)(?:\/(favorite|clip|clips\/([^/]+)))?$/);
+      const m = p.match(/^\/api\/recordings\/([^/]+)(?:\/(favorite|clip|reel|position|clips\/([^/]+)))?$/);
       if (m) {
         const id = decodeURIComponent(m[1]);
         if (!m[2] && req.method === 'GET') return json(res, await library.get(id));
         if (!m[2] && req.method === 'DELETE') { await library.remove(id); return json(res, { ok: true }); }
         if (m[2] === 'favorite' && req.method === 'POST') { const meta = await library.get(id); meta.favorite = !meta.favorite; return json(res, await library.save(meta)); }
+        if (m[2] === 'reel' && req.method === 'POST') return json(res, { clip: await library.makeReel(id) });
+        if (m[2] === 'position' && req.method === 'POST') { const b = await body(req); await library.setPosition(id, b.t); return json(res, { ok: true }); }
         if (m[2] === 'clip' && req.method === 'POST') { const b = await body(req); return json(res, await library.makeClip(id, Number(b.start), Number(b.end), { precise: !!b.precise, name: b.name })); }
         if (m[2]?.startsWith('clips/') && req.method === 'DELETE') return json(res, await library.removeClip(id, decodeURIComponent(m[3])));
       }

@@ -1,10 +1,14 @@
 // Library: one sidecar JSON per recording, clips/ subfolder, thumbnails, storage quota.
 import { execFile } from 'node:child_process';
 import { promises as fs, existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-const run = promisify(execFile);
+const exec = promisify(execFile);
+const run = (cmd, args) => exec(cmd, args, { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+/** Marker types that make the auto highlights reel (League; TFT rounds are not moments). */
+export const HIGHLIGHT_TYPES = ['kill', 'death', 'assist', 'multikill', 'objective'];
 const safe = (s) => s.replace(/[<>:"/\\|?*]/g, '-');
 
 export class Library {
@@ -72,6 +76,51 @@ export class Library {
     await this.save(meta);
     this.thumbnail(out, path.join(this.clipsDir, file.replace(/\.mp4$/, '.jpg')), 1).catch(() => {});
     return clip;
+  }
+
+  /** Remember where playback stopped, so the next visit resumes there (any device). */
+  async setPosition(id, t) { const meta = await this.get(id); meta.position = Math.max(0, Number(t) || 0); return this.save(meta); }
+
+  /**
+   * Join every highlight moment into one reel: [t-before, t+after] windows, overlapping ones merged,
+   * each cut by stream copy (snaps to keyframes) and concatenated. Replaces an earlier reel.
+   * Returns the clip entry, or null when the recording has no highlight moments.
+   */
+  async makeReel(id, { before = 10, after = 5, types = HIGHLIGHT_TYPES } = {}) {
+    const meta = await this.get(id);
+    if (meta.deleted) throw new Error('video was deleted');
+    const D = meta.durationSec || 0;
+    const ts = meta.events.filter((e) => types.includes(e.type)).map((e) => e.t).sort((a, b) => a - b);
+    const segs = [];
+    for (const t of ts) {
+      const s = Math.max(0, t - before), e = Math.min(D || t + after, t + after);
+      if (segs.length && s <= segs[segs.length - 1].end + 1) segs[segs.length - 1].end = Math.max(segs[segs.length - 1].end, e);
+      else segs.push({ start: s, end: e });
+    }
+    if (!segs.length) return null;
+    const src = path.join(this.dir, meta.file);
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'rc-reel-'));
+    try {
+      const parts = [];
+      for (const [i, s] of segs.entries()) {
+        const part = path.join(tmp, `part${i}.mp4`);
+        await run('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(s.start), '-to', String(s.end), '-i', src, '-c', 'copy', '-avoid_negative_ts', 'make_zero', part]);
+        parts.push(part);
+      }
+      const list = path.join(tmp, 'list.txt');
+      await fs.writeFile(list, parts.map((p) => `file '${p.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n'));
+      const old = meta.clips.find((c) => c.auto);
+      if (old) { await fs.rm(path.join(this.clipsDir, old.file), { force: true }); await fs.rm(path.join(this.clipsDir, old.file.replace(/\.mp4$/, '.jpg')), { force: true }); meta.clips = meta.clips.filter((c) => !c.auto); }
+      const file = `${meta.id} highlights.mp4`;
+      const out = path.join(this.clipsDir, file);
+      await run('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', list, '-c', 'copy', '-movflags', '+faststart', out]);
+      const length = await probeDuration(out).catch(() => segs.reduce((a, s) => a + s.end - s.start, 0));
+      const clip = { file, name: 'Highlights', auto: true, moments: ts.length, start: segs[0].start, end: segs[segs.length - 1].end, lengthSec: length, createdAt: new Date().toISOString(), sizeBytes: (await fs.stat(out)).size, precise: false };
+      meta.clips.unshift(clip);
+      await this.save(meta);
+      this.thumbnail(out, path.join(this.clipsDir, file.replace(/\.mp4$/, '.jpg')), Math.min(before, length / 2)).catch(() => {});
+      return clip;
+    } finally { await fs.rm(tmp, { recursive: true, force: true }); }
   }
 
   async thumbnail(video, jpg, atSec) {

@@ -19,7 +19,8 @@ export class Obs {
       if (e.outputState === 'OBS_WEBSOCKET_OUTPUT_STOPPED') this.recordStartedAt = null;
       this.onRecordStateChanged?.(e);
     });
-    this.ws.on('ConnectionClosed', () => { this.connected = false; this.log.warn('[obs] websocket closed'); });
+    this.onClosed = null;
+    this.ws.on('ConnectionClosed', () => { const was = this.connected; this.connected = false; this.log.warn('[obs] websocket closed'); if (was) this.onClosed?.(); });
   }
 
   async launchIfNeeded() {

@@ -8,6 +8,7 @@ import { Library } from './library.mjs';
 import { startServer } from './server.mjs';
 import { TftTailer } from './events/tft.mjs';
 import { LeaguePoller } from './events/league.mjs';
+import { notify } from './notify.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cfg = JSON.parse(readFileSync(process.env.REPLAY_CONFIG ?? path.join(root, 'config.json'), 'utf8'));
@@ -20,6 +21,13 @@ const obs = new Obs(cfg, log);
 
 let session = null; // { game, exe, startedAt, events: [], collector }
 let obsReady = false;
+const failures = []; // recent "a game was not recorded" problems, shown on the library page
+function fail(game, reason) {
+  log.warn(`[svc] NOT RECORDED: ${game}: ${reason}`);
+  failures.unshift({ at: new Date().toISOString(), game, reason }); failures.length = Math.min(failures.length, 20);
+  notify('Replay Capture: not recording', `${game}: ${reason}`, { log });
+}
+obs.onClosed = () => { if (session && !session.obsLost) { session.obsLost = true; fail(session.game, 'OBS disconnected during the game; the recording may be lost'); } };
 
 async function ensureObs() {
   if (obsReady && obs.connected) return;
@@ -43,14 +51,14 @@ const watcher = new GameWatcher(cfg.games, { intervalMs: 2000, graceMs: 15000 })
 watcher.on('start', async (g) => {
   log.info(`[svc] game started: ${g.name}`);
   await ensureObs();
-  if (!obsReady) return log.warn('[svc] cannot record: OBS unavailable');
+  if (!obsReady) return fail(g.name, 'OBS is not available');
   try {
     await obs.startRecord();
     session = { game: g.name, exe: g.exe, startedAt: obs.recordStartedAt ?? new Date(), events: [], collector: collectorFor(g.name) };
     session.collector?.on('event', (e) => { session.events.push(e); log.info(`[ev] ${e.type} ${e.label ?? ''}`); });
     session.collector?.start();
     log.info('[svc] recording');
-  } catch (e) { log.warn('[svc] startRecord failed:', e.message); }
+  } catch (e) { fail(g.name, `recording could not start (${e.message})`); }
 });
 watcher.on('stop', async (g) => {
   log.info(`[svc] game exited: ${g.name}`);
@@ -58,17 +66,19 @@ watcher.on('stop', async (g) => {
   try {
     s?.collector?.stop();
     const outputPath = await obs.stopRecord();
-    if (!outputPath || !s) return;
+    if (!s) return;
+    if (!outputPath) return fail(s.game, 'OBS produced no file');
     await sleep(2000); // let OBS finalize the hybrid mp4
     const meta = await library.addRecording({ outputPath, game: s.game, startedAt: s.startedAt, endedAt: new Date(), events: s.events });
     log.info(`[svc] saved ${meta.file} (${Math.round(meta.durationSec)} s, ${meta.events.length} markers)`);
-  } catch (e) { log.warn('[svc] stopRecord failed:', e.message); }
+    library.makeReel(meta.id).then((c) => { if (c) log.info(`[svc] highlights reel: ${c.moments} moments, ${Math.round(c.lengthSec)} s`); }).catch((e) => log.warn('[svc] reel failed:', e.message));
+  } catch (e) { fail(s.game, `the recording could not be saved (${e.message})`); }
 });
 watcher.on('error', (e) => log.warn('[watcher]', e.message));
 
 startServer({
   port: cfg.port, uiDir: path.join(root, 'ui'), library,
-  status: () => ({ obs: obs.connected, recording: !!session, game: session?.game ?? null, since: session?.startedAt ?? null, events: session?.events.length ?? 0, video: cfg.video }),
+  status: () => ({ obs: obs.connected, recording: !!session, game: session?.game ?? null, since: session?.startedAt ?? null, events: session?.events.length ?? 0, video: cfg.video, failures }),
 });
 log.info(`[svc] library UI: http://localhost:${cfg.port}`);
 

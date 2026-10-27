@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#080b12">
 <title>Replay Capture</title>
+<link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" href="/ui/icon.png"><link rel="manifest" href="/ui/manifest.json">
 <style>
   :root { color-scheme:dark; --bg:#080b12; --panel:#0f1623; --panel2:#111827; --line:#1e2a3d; --text:#eef3ff; --muted:#91a0ba; --gold:#c79b3b; --gold2:#e8be61;
     --kill:#4ade80; --death:#f87171; --assist:#60a5fa; --won:#4ade80; --lost:#f87171; --fight:#fbbf24; --obj:#a78bfa; }
@@ -51,6 +52,12 @@
   .ev.now { background:#172236; box-shadow:0 0 0 1px var(--gold) inset }
   .clips { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:10px }
   .clip { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden } .clip img { width:100%; aspect-ratio:16/9; object-fit:cover; display:block; background:#000 } .clip div { padding:8px; font-size:12px; display:flex; justify-content:space-between; align-items:center; gap:6px }
+  #alert { display:none; align-items:center; gap:10px; padding:10px 14px; border:1px solid var(--death); border-radius:12px; background:rgba(248,113,113,.12); color:#fecaca } #alert.show { display:flex } #alert span { flex:1 }
+  #hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; font-size:28px; font-weight:800; color:#fff; text-shadow:0 2px 12px #000; opacity:0; transition:opacity .4s } #hint.show { opacity:1; transition:none }
+  .res { display:inline-block; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:800; margin-left:6px; vertical-align:middle } .res.win { background:rgba(74,222,128,.18); color:var(--won) } .res.loss { background:rgba(248,113,113,.18); color:var(--lost) }
+  .k { color:var(--kill) } .d { color:var(--death) } .a { color:var(--assist) }
+  .clip.auto { border-color:var(--gold) } .clip .nm { font-weight:800; color:var(--gold2) }
+  #clipsHead { display:flex; justify-content:space-between; align-items:center } #reel[hidden] { display:none }
   .muted { color:var(--muted) } .empty { color:var(--muted); padding:40px; text-align:center }
   .menu, #scrim { display:none }
   /* Phone: recordings list becomes a drawer; the video gets the screen. */
@@ -70,6 +77,7 @@
     .controls { gap:6px; padding:22px 8px 6px }
     .events { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; padding-bottom:2px }
     .ev { flex:none; padding:6px 11px; font-size:13px }
+    #alert { font-size:12px; padding:8px 10px } #hint { font-size:22px }
   }
   @media (max-height:500px) and (orientation:landscape) {
     video { max-height:none; height:calc(100dvh - 92px); object-fit:contain }
@@ -83,6 +91,7 @@
 </aside>
 <div id="scrim"></div>
 <main>
+  <div id="alert"><span id="alertText"></span><button id="alertOk">Dismiss</button></div>
   <div id="empty" class="empty"><p>Pick a recording. Recordings start by themselves when TFT or League launches.</p><button class="menu">☰ Recordings</button></div>
   <div id="player" hidden>
     <div id="top" class="row">
@@ -98,14 +107,15 @@
     </div>
     <div class="viewport" id="vp">
       <video id="video" preload="metadata" playsinline></video>
+      <div id="hint"></div>
       <div class="controls">
-        <button id="play">▶</button><button id="mute">🔊</button>
+        <button id="prev" title="Previous marker (p)">⏮</button><button id="play">▶</button><button id="next" title="Next marker (n)">⏭</button><button id="mute">🔊</button>
         <div id="track"><div class="bar"></div><div class="fill" id="fill"></div><div id="marks"></div><div class="range" id="rg"></div><div class="thumb" id="thumb"></div></div>
         <span id="time">0:00 / 0:00</span><button id="zoomReset" hidden title="Reset zoom">Zoom ✕</button><span id="speedWrap"><button id="speed" title="Playback speed">1×</button><div id="speeds" hidden></div></span><button id="fs" title="Full screen">⛶</button>
       </div>
     </div>
     <div id="events" class="events"></div>
-    <div><b>Clips</b></div><div id="clips" class="clips"></div>
+    <div id="clipsHead"><b>Clips</b><button id="reel" title="Joins every kill, death, assist and objective into one video">Make highlights reel</button></div><div id="clips" class="clips"></div>
   </div>
 </main>
 <script>
@@ -119,7 +129,25 @@ const gb = (b) => (b/1e9).toFixed(2) + ' GB';
 const dur = () => (Number.isFinite(v.duration) && v.duration) || cur?.durationSec || 1;
 
 async function api(p, opt) { const r = await fetch(p, opt); if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.statusText); return r.json(); }
-async function refreshStatus() { try { const s = await api('/api/status'); const el = $('#status'); el.textContent = s.recording ? `● REC ${s.game} · ${s.events} markers` : (s.obs ? 'idle · OBS ready' : 'OBS not connected'); el.className = s.recording ? 'rec' : ''; } catch { $('#status').textContent = 'service offline'; } }
+async function refreshStatus() { try { const s = await api('/api/status'); const el = $('#status'); el.textContent = s.recording ? `● REC ${s.game} · ${s.events} markers` : (s.obs ? 'idle · OBS ready' : 'OBS not connected'); el.className = s.recording ? 'rec' : ''; showAlert(s.failures); } catch { $('#status').textContent = 'service offline'; } }
+// A game that could not be recorded shows as a red banner until dismissed (the service also sends a Windows notification).
+let dismissed = ''; try { dismissed = localStorage.rcDismissed || ''; } catch {}
+function showAlert(failures) {
+  const f = failures?.[0], el = $('#alert');
+  if (!f || f.at === dismissed) return el.classList.remove('show');
+  $('#alertText').textContent = `${f.game} at ${when(f.at)} was NOT recorded: ${f.reason}`; el.dataset.at = f.at; el.classList.add('show');
+}
+$('#alertOk').onclick = () => { dismissed = $('#alert').dataset.at; try { localStorage.rcDismissed = dismissed; } catch {} $('#alert').classList.remove('show'); };
+const when = (iso) => new Date(iso).toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+// Per-recording summary for the list: K/D/A + result for League, rounds for TFT.
+function stats(m) {
+  const n = (t) => m.events.filter((e) => e.type === t).length;
+  const end = m.events.find((e) => e.type === 'game_end')?.label || '';
+  const res = /\bwin\b/i.test(end) ? 'win' : /\b(lose|loss|defeat)\b/i.test(end) ? 'loss' : '';
+  if (m.game === 'Teamfight Tactics') return { res, line: `${n('round_won')} rounds won · ${n('round_lost')} lost` };
+  if (m.game === 'League of Legends') return { res, line: `<span class="k">${n('kill')}</span> / <span class="d">${n('death')}</span> / <span class="a">${n('assist')}</span>` };
+  return { res, line: `${m.events.length} markers` };
+}
 async function loadList() { items = await api('/api/recordings'); renderList(); }
 function setDrawer(open) { document.body.classList.toggle('drawer', open); }
 document.querySelectorAll('.menu').forEach((b) => b.onclick = () => setDrawer(true));
@@ -130,8 +158,8 @@ function renderList() {
   if (!items.length) { el.innerHTML = '<div class="empty">No recordings yet.</div>'; return; }
   for (const m of items) {
     const d = document.createElement('div'); d.className = 'item' + (cur?.id===m.id?' active':'') + (m.deleted?' deleted':'');
-    const counts = m.events.filter(e=>['kill','round_won'].includes(e.type)).length;
-    d.innerHTML = `<img src="/media/${encodeURIComponent(m.id)}.jpg" loading="lazy" onerror="this.style.visibility='hidden'"><div class="t">${m.favorite?'★ ':''}${m.game}</div><div class="s">${new Date(m.startedAt).toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })} · ${fmt(m.durationSec)}</div><div class="s">${counts} highlights · ${m.clips.length} clips · ${m.deleted?'video deleted (quota)':'<span class="g">'+gb(m.sizeBytes)+'</span>'}</div>`;
+    const { res, line } = stats(m);
+    d.innerHTML = `<img src="/media/${encodeURIComponent(m.id)}.jpg" loading="lazy" onerror="this.style.visibility='hidden'"><div class="t">${m.favorite?'★ ':''}${m.game}${res ? `<span class="res ${res}">${res === 'win' ? 'Win' : 'Loss'}</span>` : ''}</div><div class="s">${when(m.startedAt)} · ${fmt(m.durationSec)}</div><div class="s">${line} · ${m.clips.length} clips · ${m.deleted?'video deleted (quota)':'<span class="g">'+gb(m.sizeBytes)+'</span>'}</div>`;
     d.onclick = () => select(m.id); el.appendChild(d);
   }
 }
@@ -149,14 +177,39 @@ function mergeRounds(events) {
 }
 const lead = (e) => /^(combat_start|round_)/.test(e.type) ? 2 : 5;
 
-async function select(id) {
+/** Open a recording. `at` seeks there once loaded; otherwise resume where it was last left (saved by any device). */
+async function select(id, at) {
   cur = await api('/api/recordings/' + encodeURIComponent(id)); inT = outT = null; renderList(); setDrawer(false);
   $('#empty').hidden = true; $('#player').hidden = false;
-  $('#title').textContent = cur.game; $('#sub').textContent = `${new Date(cur.startedAt).toLocaleString([], { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })} · ${fmt(cur.durationSec)}`;
+  $('#title').textContent = cur.game; $('#sub').textContent = `${when(cur.startedAt)} · ${fmt(cur.durationSec)}`;
   $('#fav').innerHTML = (cur.favorite ? '★' : '☆') + '<span class="lbl"> Favourite</span>'; $('#fav').classList.toggle('on', !!cur.favorite);
+  $('#reel').hidden = cur.game !== 'League of Legends' || cur.deleted; $('#reel').textContent = cur.clips.some((c) => c.auto) ? 'Remake highlights reel' : 'Make highlights reel';
+  const resume = at ?? ((cur.position > 10 && cur.position < (cur.durationSec || 0) - 30) ? cur.position : null);
   v.src = cur.deleted ? '' : '/media/' + encodeURIComponent(cur.file); v.playbackRate = rate; resetZoom();
+  if (resume != null) v.addEventListener('loadedmetadata', () => { seek(resume); if (at == null) showHint(`Resumed at ${fmt(resume)}`); }, { once: true });
   shown = mergeRounds(cur.events); renderEvents(); renderClips(); updateRange(); sync();
 }
+// Remember the position every 10 s and on pause/leave, so the next visit (phone or PC) picks up there.
+let lastSaved = 0;
+function savePos(force) {
+  if (!cur || cur.deleted) return;
+  if (!force && Date.now() - lastSaved < 10000) return; lastSaved = Date.now();
+  const t = v.currentTime || 0, keep = (t > 10 && t < dur() - 30) ? Math.floor(t) : 0;
+  if (cur.position === keep) return; cur.position = keep;
+  const url = `/api/recordings/${encodeURIComponent(cur.id)}/position`, body = JSON.stringify({ t: keep });
+  if (force && navigator.sendBeacon) navigator.sendBeacon(url, new Blob([body], { type:'application/json' }));
+  else fetch(url, { method:'POST', headers:{'content-type':'application/json'}, body }).catch(() => {});
+}
+v.addEventListener('timeupdate', () => savePos(false)); v.addEventListener('pause', () => savePos(true)); addEventListener('pagehide', () => savePos(true));
+let hintTimer; function showHint(text) { const h = $('#hint'); h.textContent = text; h.classList.add('show'); clearTimeout(hintTimer); hintTimer = setTimeout(() => h.classList.remove('show'), 800); }
+/** Jump to the previous/next marker from the current position. */
+function jump(dir) {
+  const t = v.currentTime, list = shown.map((e) => e.t - lead(e));
+  const target = dir > 0 ? list.find((x) => x > t + 1) : [...list].reverse().find((x) => x < t - 1.5);
+  if (target == null) return showHint(dir > 0 ? 'No more markers' : 'First marker');
+  const e = shown[list.indexOf(target)]; seek(target, true); showHint(`${dir > 0 ? '⏭' : '⏮'} ${e.label || e.type}`);
+}
+$('#prev').onclick = () => jump(-1); $('#next').onclick = () => jump(1);
 function renderEvents() {
   const mk = $('#marks'); mk.innerHTML = ''; const ev = $('#events'); ev.innerHTML = '';
   shown.forEach((e, i) => {
@@ -242,9 +295,20 @@ vp.addEventListener('pointermove', (e) => {
     if (gesture.moved && z > 1) { tx = gesture.base.tx + dx; ty = gesture.base.ty + dy; applyZoom(); }
   }
 });
+// Tap: play/pause. Double-tap on the left or right third: skip 10 s back or forward (like YouTube).
+let tapTimer = null, lastTap = 0;
+function tap(x) {
+  const now = Date.now(), w = vp.clientWidth;
+  if (now - lastTap < 320) {
+    clearTimeout(tapTimer); tapTimer = null; lastTap = 0;
+    if (x < w * 0.35) { seek(v.currentTime - 10); showHint('« 10 s'); } else if (x > w * 0.65) { seek(v.currentTime + 10); showHint('10 s »'); } else togglePlay();
+    return;
+  }
+  lastTap = now; tapTimer = setTimeout(() => { tapTimer = null; togglePlay(); }, 320);
+}
 function endPointer(e) {
   pts.delete(e.pointerId);
-  if (gesture?.kind === 'pan' && !gesture.moved && Date.now() - gesture.at < 400 && !gesture.wasIdle) togglePlay();
+  if (gesture?.kind === 'pan' && !gesture.moved && Date.now() - gesture.at < 400 && !gesture.wasIdle) tap(gesture.start.x);
   if (pts.size === 1) { const [a] = pts.values(); gesture = { kind:'pan', start:a, base:{ z, tx, ty }, moved:true }; } else if (!pts.size) gesture = null;
 }
 vp.addEventListener('pointerup', endPointer); vp.addEventListener('pointercancel', endPointer);
@@ -254,18 +318,25 @@ addEventListener('resize', applyZoom); document.addEventListener('fullscreenchan
 function updateRange() { const rg = $('#rg'); const D = dur(); if (inT!=null && outT!=null && outT>inT) { rg.style.left = (inT/D*100)+'%'; rg.style.width = ((outT-inT)/D*100)+'%'; $('#range').textContent = `${fmt(inT)} → ${fmt(outT)}`; } else { rg.style.width = '0'; $('#range').textContent = inT!=null ? `in ${fmt(inT)}` : (outT!=null ? `out ${fmt(outT)}` : 'no range'); } }
 $('#setIn').onclick = () => { inT = v.currentTime; updateRange(); };
 $('#setOut').onclick = () => { outT = v.currentTime; updateRange(); };
-$('#cut').onclick = async () => { if (inT==null || outT==null || outT<=inT) return $('#cutMsg').textContent = 'set In and Out first'; $('#cutMsg').textContent = 'cutting…'; try { await api('/api/recordings/' + encodeURIComponent(cur.id) + '/clip', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ start: inT, end: outT, precise: $('#precise').checked, name: $('#clipName').value }) }); $('#cutMsg').textContent = 'done'; const t = v.currentTime; await select(cur.id); seek(t); await loadList(); } catch (e) { $('#cutMsg').textContent = 'failed: ' + e.message; } };
-$('#fav').onclick = async () => { const t = v.currentTime, playing = !v.paused; await api('/api/recordings/' + encodeURIComponent(cur.id) + '/favorite', { method:'POST' }); await loadList(); await select(cur.id); seek(t, playing); };
+$('#cut').onclick = async () => { if (inT==null || outT==null || outT<=inT) return $('#cutMsg').textContent = 'set In and Out first'; $('#cutMsg').textContent = 'cutting…'; try { await api('/api/recordings/' + encodeURIComponent(cur.id) + '/clip', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ start: inT, end: outT, precise: $('#precise').checked, name: $('#clipName').value }) }); $('#cutMsg').textContent = 'done'; await select(cur.id, v.currentTime); await loadList(); } catch (e) { $('#cutMsg').textContent = 'failed: ' + e.message; } };
+$('#fav').onclick = async () => { const t = v.currentTime; await api('/api/recordings/' + encodeURIComponent(cur.id) + '/favorite', { method:'POST' }); await loadList(); await select(cur.id, t); };
+$('#reel').onclick = async () => {
+  const b = $('#reel'); b.disabled = true; b.textContent = 'Making reel…';
+  try { const { clip } = await api('/api/recordings/' + encodeURIComponent(cur.id) + '/reel', { method:'POST' }); await select(cur.id, v.currentTime); await loadList(); if (!clip) showHint('No highlight moments'); }
+  catch (e) { alert('Reel failed: ' + e.message); b.textContent = 'Make highlights reel'; }
+  finally { b.disabled = false; }
+};
 $('#del').onclick = async () => { if (!confirm(`Delete "${cur.id}" and its clips?`)) return; await api('/api/recordings/' + encodeURIComponent(cur.id), { method:'DELETE' }); cur = null; v.removeAttribute('src'); $('#player').hidden = true; $('#empty').hidden = false; await loadList(); };
 $('#open').onclick = () => { navigator.clipboard?.writeText(cur.file); alert('File: ' + cur.file + '\n(in your Replay Capture library folder; name copied)'); };
 function renderClips() {
   const el = $('#clips'); el.innerHTML = cur.clips.length ? '' : '<span class="muted">No clips yet. Set In and Out, then press Clip.</span>';
-  for (const c of cur.clips) { const d = document.createElement('div'); d.className = 'clip'; const jpg = c.file.replace(/\.mp4$/, '.jpg');
-    d.innerHTML = `<a href="/media/clips/${encodeURIComponent(c.file)}" target="_blank"><img src="/media/clips/${encodeURIComponent(jpg)}" onerror="this.style.visibility='hidden'"></a><div><span>${fmt(c.start)}–${fmt(c.end)} · ${gb(c.sizeBytes)}</span><button class="danger" title="delete clip">✕</button></div>`;
+  for (const c of cur.clips) { const d = document.createElement('div'); d.className = 'clip' + (c.auto ? ' auto' : ''); const jpg = c.file.replace(/\.mp4$/, '.jpg');
+    const label = c.auto ? `<span class="nm">Highlights</span> · ${c.moments} moments · ${fmt(c.lengthSec)}` : `${fmt(c.start)}–${fmt(c.end)}`;
+    d.innerHTML = `<a href="/media/clips/${encodeURIComponent(c.file)}" target="_blank"><img src="/media/clips/${encodeURIComponent(jpg)}" onerror="this.style.visibility='hidden'"></a><div><span>${label} · ${gb(c.sizeBytes)}</span><button class="danger" title="delete clip">✕</button></div>`;
     d.querySelector('button').onclick = async () => { if (!confirm('Delete clip?')) return; await api(`/api/recordings/${encodeURIComponent(cur.id)}/clips/${encodeURIComponent(c.file)}`, { method:'DELETE' }); await select(cur.id); await loadList(); };
     el.appendChild(d); }
 }
-document.addEventListener('keydown', (e) => { if (e.target.tagName==='INPUT' || !cur) return; if (e.key==='i') $('#setIn').click(); if (e.key==='o') $('#setOut').click(); if (e.key===' ') { e.preventDefault(); togglePlay(); } if (e.key==='ArrowLeft') seek(v.currentTime - 5); if (e.key==='ArrowRight') seek(v.currentTime + 5); const i = RATES.indexOf(rate); if (e.key==='ArrowUp') { e.preventDefault(); if (i < RATES.length-1) setRate(RATES[i+1]); } if (e.key==='ArrowDown') { e.preventDefault(); if (i > 0) setRate(RATES[i-1]); } });
+document.addEventListener('keydown', (e) => { if (e.target.tagName==='INPUT' || !cur) return; if (e.key==='i') $('#setIn').click(); if (e.key==='o') $('#setOut').click(); if (e.key===' ') { e.preventDefault(); togglePlay(); } if (e.key==='ArrowLeft') seek(v.currentTime - 5); if (e.key==='ArrowRight') seek(v.currentTime + 5); if (e.key==='n') jump(1); if (e.key==='p') jump(-1); const i = RATES.indexOf(rate); if (e.key==='ArrowUp') { e.preventDefault(); if (i < RATES.length-1) setRate(RATES[i+1]); } if (e.key==='ArrowDown') { e.preventDefault(); if (i > 0) setRate(RATES[i-1]); } });
 loadList().then(() => { if (compact.matches && !cur) setDrawer(true); }); refreshStatus(); setInterval(refreshStatus, 3000); setInterval(loadList, 30000);
 </script>
 </body>

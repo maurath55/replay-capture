@@ -1,0 +1,10 @@
+{
+  "name": "Replay Capture",
+  "short_name": "Replays",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#080b12",
+  "theme_color": "#080b12",
+  "icons": [{ "src": "/ui/icon.png", "sizes": "512x512", "type": "image/png" }]
+}
