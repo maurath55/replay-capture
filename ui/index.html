@@ -265,7 +265,7 @@ function renderClips() {
     d.querySelector('button').onclick = async () => { if (!confirm('Delete clip?')) return; await api(`/api/recordings/${encodeURIComponent(cur.id)}/clips/${encodeURIComponent(c.file)}`, { method:'DELETE' }); await select(cur.id); await loadList(); };
     el.appendChild(d); }
 }
-document.addEventListener('keydown', (e) => { if (e.target.tagName==='INPUT' || !cur) return; if (e.key==='i') $('#setIn').click(); if (e.key==='o') $('#setOut').click(); if (e.key===' ') { e.preventDefault(); togglePlay(); } if (e.key==='ArrowLeft') seek(v.currentTime - 5); if (e.key==='ArrowRight') seek(v.currentTime + 5); const i = RATES.indexOf(rate); if (e.key==='>' && i < RATES.length-1) setRate(RATES[i+1]); if (e.key==='<' && i > 0) setRate(RATES[i-1]); });
+document.addEventListener('keydown', (e) => { if (e.target.tagName==='INPUT' || !cur) return; if (e.key==='i') $('#setIn').click(); if (e.key==='o') $('#setOut').click(); if (e.key===' ') { e.preventDefault(); togglePlay(); } if (e.key==='ArrowLeft') seek(v.currentTime - 5); if (e.key==='ArrowRight') seek(v.currentTime + 5); const i = RATES.indexOf(rate); if (e.key==='ArrowUp') { e.preventDefault(); if (i < RATES.length-1) setRate(RATES[i+1]); } if (e.key==='ArrowDown') { e.preventDefault(); if (i > 0) setRate(RATES[i-1]); } });
 loadList().then(() => { if (compact.matches && !cur) setDrawer(true); }); refreshStatus(); setInterval(refreshStatus, 3000); setInterval(loadList, 30000);
 </script>
 </body>
